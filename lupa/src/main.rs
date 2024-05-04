@@ -1,4 +1,5 @@
-use aya::programs::KProbe;
+use aya::maps::Array;
+use aya::programs::{KProbe, TracePoint};
 use aya::{include_bytes_aligned, Bpf};
 use aya_log::BpfLogger;
 use log::{debug, info, warn};
@@ -36,9 +37,22 @@ async fn main() -> Result<(), anyhow::Error> {
         warn!("failed to initialize eBPF logger: {}", e);
     }
 
+    let mut pid_to_trace: Array<_, u64> = bpf
+        .take_map("PID_TO_TRACE")
+        .expect("Failed to obtain PID to track map from probe")
+        .try_into()
+        .unwrap();
+    pid_to_trace
+        .set(0, 1u64, 0)
+        .expect("Failed to set PID on the probe's map");
+
     let program: &mut KProbe = bpf.program_mut("do_sys_openat2").unwrap().try_into()?;
     program.load()?;
     program.attach("do_sys_openat2", 0)?;
+
+    let program: &mut TracePoint = bpf.program_mut("do_sys_enter_close").unwrap().try_into()?;
+    program.load()?;
+    program.attach("syscalls", "sys_enter_close")?;
 
     info!("Waiting for Ctrl-C...");
     signal::ctrl_c().await?;
