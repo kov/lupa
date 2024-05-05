@@ -42,7 +42,14 @@ fn try_do_sys_openat2(ctx: ProbeContext) -> Result<u32, u32> {
         return Ok(0);
     }
 
-    info!(&ctx, "function do_sys_openat2 called PID {}", pid);
+    let fd: i64 = ctx.ret().ok_or(1u32)?;
+
+    if fd < 0 {
+        info!(&ctx, "PID {} failed to open file", pid)
+    } else {
+        info!(&ctx, "function do_sys_openat2 called PID {} FD {}", pid, fd);
+    }
+
     Ok(0)
 }
 
