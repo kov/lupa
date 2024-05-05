@@ -1,3 +1,6 @@
+use std::env;
+
+use anyhow::bail;
 use aya::maps::Array;
 use aya::programs::{KProbe, TracePoint};
 use aya::{include_bytes_aligned, Bpf};
@@ -8,6 +11,13 @@ use tokio::signal;
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
     env_logger::init();
+
+    let args: Vec<String> = env::args().collect();
+    if args.len() != 2 {
+        bail!("need a single argument, a PID to trace.");
+    }
+
+    let pid: u64 = args[1].parse()?;
 
     // Bump the memlock rlimit. This is needed for older kernels that don't use the
     // new memcg based accounting, see https://lwn.net/Articles/837122/
@@ -43,7 +53,7 @@ async fn main() -> Result<(), anyhow::Error> {
         .try_into()
         .unwrap();
     pid_to_trace
-        .set(0, 1u64, 0)
+        .set(0, pid, 0)
         .expect("Failed to set PID on the probe's map");
 
     let program: &mut KProbe = bpf.program_mut("do_sys_openat2").unwrap().try_into()?;
