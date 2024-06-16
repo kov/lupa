@@ -8,6 +8,8 @@ use aya_log::BpfLogger;
 use log::{debug, info, warn};
 use tokio::signal;
 
+mod trace;
+
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
     env_logger::init();
@@ -56,13 +58,22 @@ async fn main() -> Result<(), anyhow::Error> {
         .set(0, pid, 0)
         .expect("Failed to set PID on the probe's map");
 
-    let program: &mut KProbe = bpf.program_mut("do_sys_openat2").unwrap().try_into()?;
+    let program: &mut KProbe = bpf.program_mut("do_sys_openat2_exit").unwrap().try_into()?;
+    program.load()?;
+    program.attach("do_sys_openat2", 0)?;
+
+    let program: &mut KProbe = bpf
+        .program_mut("do_sys_openat2_entry")
+        .unwrap()
+        .try_into()?;
     program.load()?;
     program.attach("do_sys_openat2", 0)?;
 
     let program: &mut TracePoint = bpf.program_mut("do_sys_enter_close").unwrap().try_into()?;
     program.load()?;
     program.attach("syscalls", "sys_enter_close")?;
+
+    let _ = std::thread::spawn(|| trace::run(bpf));
 
     info!("Waiting for Ctrl-C...");
     signal::ctrl_c().await?;

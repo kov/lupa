@@ -1,18 +1,27 @@
 #![no_std]
 #![no_main]
 
-use aya_ebpf::helpers::bpf_get_current_pid_tgid;
-use aya_ebpf::macros::map;
-use aya_ebpf::maps::Array;
+use aya_ebpf::helpers::{bpf_get_current_pid_tgid, bpf_probe_read_user_str_bytes};
+use aya_ebpf::macros::{kprobe, map};
+use aya_ebpf::maps::{Array, PerfEventArray};
 use aya_ebpf::programs::TracePointContext;
 use aya_ebpf::{
     macros::{kretprobe, tracepoint},
     programs::ProbeContext,
 };
 use aya_log_ebpf::info;
+use lupa_common::{FileEvent, MAX_CPUS};
 
 #[map]
 static PID_TO_TRACE: Array<u64> = Array::with_max_entries(1, 0);
+
+#[map]
+static FILE_EVENTS: PerfEventArray<FileEvent> =
+    PerfEventArray::with_max_entries(MAX_CPUS as u32, 0);
+
+fn getid() -> u64 {
+    bpf_get_current_pid_tgid()
+}
 
 fn getpid() -> u64 {
     bpf_get_current_pid_tgid() >> 32
@@ -28,14 +37,14 @@ fn should_trace(pid: u64) -> bool {
 }
 
 #[kretprobe]
-pub fn do_sys_openat2(ctx: ProbeContext) -> u32 {
-    match try_do_sys_openat2(ctx) {
+pub fn do_sys_openat2_exit(ctx: ProbeContext) -> u32 {
+    match try_do_sys_openat2_exit(ctx) {
         Ok(ret) => ret,
         Err(ret) => ret,
     }
 }
 
-fn try_do_sys_openat2(ctx: ProbeContext) -> Result<u32, u32> {
+fn try_do_sys_openat2_exit(ctx: ProbeContext) -> Result<u32, u32> {
     let pid = getpid();
 
     if !should_trace(pid) {
@@ -49,6 +58,40 @@ fn try_do_sys_openat2(ctx: ProbeContext) -> Result<u32, u32> {
     } else {
         info!(&ctx, "function do_sys_openat2 called PID {} FD {}", pid, fd);
     }
+
+    FILE_EVENTS.output(&ctx, &FileEvent::finish_open(getid(), pid, fd), 0);
+
+    Ok(0)
+}
+
+#[kprobe]
+pub fn do_sys_openat2_entry(ctx: ProbeContext) -> u32 {
+    match try_do_sys_openat2_entry(ctx) {
+        Ok(ret) => ret,
+        Err(ret) => ret,
+    }
+}
+
+fn try_do_sys_openat2_entry(ctx: ProbeContext) -> Result<u32, u32> {
+    let pid = getpid();
+
+    if !should_trace(pid) {
+        return Ok(0);
+    }
+
+    let mut event = FileEvent::begin_open(getid(), pid);
+
+    info!(&ctx, "PID {} begins to open file", pid);
+
+    unsafe {
+        let path: *const u8 = ctx.arg(1).ok_or(1u32)?;
+        if let Err(e) = bpf_probe_read_user_str_bytes(path, event.path.as_mut_slice()) {
+            info!(&ctx, "bpf_probe_read_user_str {}", e);
+            return Err(1u32);
+        };
+    }
+
+    FILE_EVENTS.output(&ctx, &event, 0);
 
     Ok(0)
 }
