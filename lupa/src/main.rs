@@ -1,3 +1,4 @@
+#![feature(slice_split_once)]
 use std::env;
 
 use anyhow::bail;
