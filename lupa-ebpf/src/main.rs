@@ -136,6 +136,9 @@ pub fn do_sys_enter_close(ctx: TracePointContext) {
         &ctx,
         "function do_sys_enter_close called PID {} FD {}", pid, fd
     );
+
+    let event = FileEvent::close(getid(), pid, fd as i64);
+    FILE_EVENTS.output(&ctx, &event, 0);
 }
 
 #[panic_handler]

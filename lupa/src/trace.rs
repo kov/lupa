@@ -6,7 +6,10 @@ use aya::{
 use bytes::BytesMut;
 use log::trace;
 use lupa_common::{EventKind, FileEvent};
-use std::{collections::HashMap, ffi::OsStr, io, os::unix::ffi::OsStrExt, path::PathBuf};
+use std::{
+    collections::HashMap, ffi::OsStr, io, os::unix::ffi::OsStrExt, path::PathBuf,
+    sync::mpsc::Sender,
+};
 use thiserror::Error;
 
 #[derive(Debug)]
@@ -39,6 +42,13 @@ impl Event {
             },
         }
     }
+
+    fn from_close_event(event: &FileEvent) -> Self {
+        Event {
+            pid: event.pid,
+            detail: EventDetail::FdClose { fd: event.fd },
+        }
+    }
 }
 
 #[derive(Error, Debug)]
@@ -63,7 +73,7 @@ fn read_event(buf: &mut PerfEventArrayBuffer<MapData>) -> FileEvent {
     unsafe { std::ptr::read(buffers[0].as_ptr() as *const FileEvent) }
 }
 
-pub fn run(mut bpf: Bpf) -> Result<(), anyhow::Error> {
+pub fn run(mut bpf: Bpf, tx: Sender<Event>) -> Result<(), anyhow::Error> {
     let mut events: PerfEventArray<_> = bpf
         .take_map("FILE_EVENTS")
         .expect("Failed to take file events map")
@@ -100,7 +110,7 @@ pub fn run(mut bpf: Bpf) -> Result<(), anyhow::Error> {
                     EventKind::FinishOpen => {
                         if let Some((_, prev_event)) = inflight_map.remove_entry(&event.id) {
                             let api_event = Event::from_open_events(&prev_event, &event);
-                            println!("file opened: {:?}", api_event);
+                            tx.send(api_event).unwrap();
                         } else {
                             trace!(
                                 "no inflight event was found with id {} pid {} path {:?}",
@@ -110,7 +120,10 @@ pub fn run(mut bpf: Bpf) -> Result<(), anyhow::Error> {
                             );
                         }
                     }
-                    EventKind::Close => unimplemented!(),
+                    EventKind::Close => {
+                        let api_event = Event::from_close_event(&event);
+                        tx.send(api_event).unwrap();
+                    }
                 }
             }
         }

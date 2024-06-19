@@ -1,5 +1,7 @@
 #![feature(slice_split_once)]
+use std::collections::HashMap;
 use std::env;
+use std::sync::mpsc::{self, Receiver, Sender};
 
 use anyhow::bail;
 use aya::maps::Array;
@@ -8,6 +10,8 @@ use aya::{include_bytes_aligned, Bpf};
 use aya_log::BpfLogger;
 use log::{debug, info, warn};
 use tokio::signal;
+
+use crate::trace::{Event, EventDetail};
 
 mod trace;
 
@@ -74,7 +78,30 @@ async fn main() -> Result<(), anyhow::Error> {
     program.load()?;
     program.attach("syscalls", "sys_enter_close")?;
 
-    let _ = std::thread::spawn(|| trace::run(bpf));
+    let (tx, rx): (Sender<Event>, Receiver<Event>) = mpsc::channel();
+    let _ = std::thread::spawn(|| trace::run(bpf, tx));
+    let _ = std::thread::spawn(move || {
+        let mut currently_open = HashMap::<(u64, i64), Event>::new();
+        loop {
+            let event = rx.recv().unwrap();
+            println!("Event received: {:?}", event);
+            match event.detail {
+                EventDetail::FileOpen { fd, .. } => {
+                    if currently_open.insert((event.pid, fd), event).is_some() {
+                        debug!("tried to insert duplicate fd {}", fd);
+                    }
+                }
+                EventDetail::FdClose { fd } => {
+                    if currently_open.remove_entry(&(event.pid, fd)).is_none() {
+                        debug!(
+                            "no fd on hashmap while trying to close fd {} event {:?}",
+                            fd, event
+                        );
+                    }
+                }
+            }
+        }
+    });
 
     info!("Waiting for Ctrl-C...");
     signal::ctrl_c().await?;
