@@ -15,6 +15,7 @@ use thiserror::Error;
 #[derive(Debug)]
 pub enum EventDetail {
     FileOpen { fd: i64, path: PathBuf },
+    FailedFileOpen { errno: i64, path: PathBuf },
     FdClose { fd: i64 },
 }
 
@@ -33,13 +34,24 @@ impl Event {
             Some((p, _)) => p,
             None => &begin.path,
         };
+        let path = PathBuf::from(OsStr::from_bytes(path));
 
-        Event {
-            pid: begin.pid,
-            detail: EventDetail::FileOpen {
-                fd: finish.fd,
-                path: PathBuf::from(OsStr::from_bytes(path)),
-            },
+        if finish.fd < 0 {
+            Event {
+                pid: begin.pid,
+                detail: EventDetail::FailedFileOpen {
+                    errno: finish.fd,
+                    path,
+                },
+            }
+        } else {
+            Event {
+                pid: begin.pid,
+                detail: EventDetail::FileOpen {
+                    fd: finish.fd,
+                    path,
+                },
+            }
         }
     }
 

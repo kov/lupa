@@ -91,6 +91,12 @@ async fn main() -> Result<(), anyhow::Error> {
                         debug!("tried to insert duplicate fd {}", fd);
                     }
                 }
+                EventDetail::FailedFileOpen { errno, path } => {
+                    debug!(
+                        "attempt to open file path {:?} failed with error {}",
+                        path, errno
+                    );
+                }
                 EventDetail::FdClose { fd } => {
                     if currently_open.remove_entry(&(event.pid, fd)).is_none() {
                         debug!(
