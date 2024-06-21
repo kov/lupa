@@ -2,6 +2,7 @@
 use std::collections::HashMap;
 use std::env;
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 
 use anyhow::bail;
 use aya::maps::Array;
@@ -80,30 +81,31 @@ async fn main() -> Result<(), anyhow::Error> {
 
     let (tx, rx): (Sender<Event>, Receiver<Event>) = mpsc::channel();
     let _ = std::thread::spawn(|| trace::run(bpf, tx));
-    let _ = std::thread::spawn(move || {
-        let mut currently_open = HashMap::<(u64, i64), Event>::new();
-        loop {
-            let event = rx.recv().unwrap();
-            println!("Event received: {:?}", event);
-            match event.detail {
-                EventDetail::FileOpen { fd, .. } => {
-                    if currently_open.insert((event.pid, fd), event).is_some() {
-                        debug!("tried to insert duplicate fd {}", fd);
-                    }
+
+    let currently_open = Arc::new(Mutex::new(HashMap::<(u64, i64), Event>::new()));
+    let t_currently_open = currently_open.clone();
+    let _ = std::thread::spawn(move || loop {
+        let event = rx.recv().unwrap();
+        println!("Event received: {:?}", event);
+        let mut currently_open = t_currently_open.lock().unwrap();
+        match event.detail {
+            EventDetail::FileOpen { fd, .. } => {
+                if currently_open.insert((event.pid, fd), event).is_some() {
+                    debug!("tried to insert duplicate fd {}", fd);
                 }
-                EventDetail::FailedFileOpen { errno, path } => {
+            }
+            EventDetail::FailedFileOpen { errno, path } => {
+                debug!(
+                    "attempt to open file path {:?} failed with error {}",
+                    path, errno
+                );
+            }
+            EventDetail::FdClose { fd } => {
+                if currently_open.remove_entry(&(event.pid, fd)).is_none() {
                     debug!(
-                        "attempt to open file path {:?} failed with error {}",
-                        path, errno
+                        "no fd on hashmap while trying to close fd {} event {:?}",
+                        fd, event
                     );
-                }
-                EventDetail::FdClose { fd } => {
-                    if currently_open.remove_entry(&(event.pid, fd)).is_none() {
-                        debug!(
-                            "no fd on hashmap while trying to close fd {} event {:?}",
-                            fd, event
-                        );
-                    }
                 }
             }
         }
@@ -111,6 +113,8 @@ async fn main() -> Result<(), anyhow::Error> {
 
     info!("Waiting for Ctrl-C...");
     signal::ctrl_c().await?;
+    println!("\nCurrently open:");
+    println!("{:?}", currently_open.lock().unwrap());
     info!("Exiting...");
 
     Ok(())
