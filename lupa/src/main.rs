@@ -1,4 +1,5 @@
 #![feature(slice_split_once)]
+#![feature(fn_traits)]
 use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
@@ -6,15 +7,15 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
 use anyhow::bail;
+use cli::Shell;
 use log::debug;
 use rustyline::error::ReadlineError;
 
+use crate::cli::{EventList, OpenFilesMap};
 use crate::trace::{init_ebpf, Event, EventDetail};
 
+mod cli;
 mod trace;
-
-type EventList = Arc<Mutex<Vec<Event>>>;
-type OpenFilesMap = Arc<Mutex<HashMap<(u64, i64), PathBuf>>>;
 
 fn begin_tracking_events(rx: Receiver<Event>, all_events: EventList, currently_open: OpenFilesMap) {
     let _ = std::thread::spawn(move || loop {
@@ -57,19 +58,6 @@ fn begin_tracking_events(rx: Receiver<Event>, all_events: EventList, currently_o
     });
 }
 
-fn print_help() {
-    println!("help\nshow this help text");
-    println!("lsof\nshow currently open files");
-    println!("q\nexit the program");
-}
-
-fn print_currently_open(currently_open: OpenFilesMap) {
-    println!("PID\tFD\t\tPath");
-    for ((pid, fd), path) in currently_open.lock().unwrap().iter() {
-        println!("{}\t{}\t\t{}", pid, fd, path.to_string_lossy());
-    }
-}
-
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
     env_logger::init();
@@ -91,15 +79,16 @@ async fn main() -> Result<(), anyhow::Error> {
 
     begin_tracking_events(rx, all_events.clone(), currently_open.clone());
 
+    // CLI
+    let mut shell = Shell::new(all_events, currently_open);
     let mut rl = rustyline::DefaultEditor::new()?;
     loop {
         match rl.readline(">> ") {
-            Ok(line) => match line.trim() {
-                "q" => break,
-                "help" => print_help(),
-                "lsof" => print_currently_open(currently_open.clone()),
-                _ => println!("unknown command"),
-            },
+            Ok(line) => {
+                if shell.handle_line(line).is_err() {
+                    break;
+                };
+            }
             Err(ReadlineError::Eof) => break,
             Err(_) => println!("No input"),
         }
