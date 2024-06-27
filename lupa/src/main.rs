@@ -10,6 +10,7 @@ use anyhow::bail;
 use cli::Shell;
 use log::debug;
 use rustyline::error::ReadlineError;
+use rustyline::ExternalPrinter;
 
 use crate::cli::{EventList, OpenFilesMap};
 use crate::trace::{init_ebpf, Event, EventDetail};
@@ -17,10 +18,14 @@ use crate::trace::{init_ebpf, Event, EventDetail};
 mod cli;
 mod trace;
 
-fn begin_tracking_events(rx: Receiver<Event>, all_events: EventList, currently_open: OpenFilesMap) {
+fn begin_tracking_events<W: ExternalPrinter + Send + 'static>(
+    rx: Receiver<Event>,
+    mut writer: W,
+    all_events: EventList,
+    currently_open: OpenFilesMap,
+) {
     let _ = std::thread::spawn(move || loop {
         let event = rx.recv().unwrap();
-        println!("Event received: {:?}", event);
 
         match event.detail {
             EventDetail::FileOpen { fd, ref path } => {
@@ -32,12 +37,28 @@ fn begin_tracking_events(rx: Receiver<Event>, all_events: EventList, currently_o
                 {
                     debug!("tried to insert duplicate fd {}", fd);
                 }
+                writer
+                    .print(format!(
+                        "Process {} opened fd {} with path {}",
+                        event.pid,
+                        fd,
+                        path.to_string_lossy(),
+                    ))
+                    .expect("Failed to write to terminal");
             }
             EventDetail::FailedFileOpen { errno, ref path } => {
                 debug!(
                     "attempt to open file path {:?} failed with error {}",
                     path, errno
                 );
+                writer
+                    .print(format!(
+                        "Process {} failed to open path {} with error {}",
+                        event.pid,
+                        path.to_string_lossy(),
+                        errno
+                    ))
+                    .expect("Failed to write to terminal");
             }
             EventDetail::FdClose { fd } => {
                 if currently_open
@@ -51,6 +72,9 @@ fn begin_tracking_events(rx: Receiver<Event>, all_events: EventList, currently_o
                         fd, event
                     );
                 }
+                writer
+                    .print(format!("Process {} closed fd {}", event.pid, fd,))
+                    .expect("Failed to write to terminal");
             }
         }
 
@@ -77,11 +101,13 @@ async fn main() -> Result<(), anyhow::Error> {
     let all_events = Arc::new(Mutex::new(vec![]));
     let currently_open = Arc::new(Mutex::new(HashMap::<(u64, i64), PathBuf>::new()));
 
-    begin_tracking_events(rx, all_events.clone(), currently_open.clone());
+    let mut rl = rustyline::DefaultEditor::new()?;
+    let writer = rl.create_external_printer()?;
+
+    begin_tracking_events(rx, writer, all_events.clone(), currently_open.clone());
 
     // CLI
     let mut shell = Shell::new(all_events, currently_open);
-    let mut rl = rustyline::DefaultEditor::new()?;
     loop {
         match rl.readline(">> ") {
             Ok(line) => {
