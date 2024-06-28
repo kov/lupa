@@ -2,7 +2,7 @@
 #![feature(fn_traits)]
 use std::collections::HashMap;
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
@@ -82,6 +82,47 @@ fn begin_tracking_events<W: ExternalPrinter + Send + 'static>(
     });
 }
 
+pub fn path_for_pid<P: AsRef<Path>>(pid: u64, fname: P) -> PathBuf {
+    let mut path = PathBuf::from("/proc");
+    path.push(pid.to_string());
+    path.push(fname.as_ref());
+    path
+}
+
+fn collect_already_open(pid: u64, currently_open: OpenFilesMap) -> Result<(), anyhow::Error> {
+    let mut open_files = currently_open.lock().unwrap();
+
+    if let Ok(procdir) = std::fs::read_dir(path_for_pid(pid, "fd")) {
+        procdir
+            .filter_map(|entry| {
+                if let Ok(entry) = entry {
+                    std::fs::read_link(&entry.path())
+                        .map_err(|e| anyhow::anyhow!(e))
+                        .and_then(|l| {
+                            if l.starts_with("/") {
+                                let fd = entry
+                                    .file_name()
+                                    .to_string_lossy()
+                                    .parse::<i64>()
+                                    .expect("Symlink is not a valid fd?");
+                                Ok((fd, l))
+                            } else {
+                                Err(anyhow::anyhow!("Not a regular file"))
+                            }
+                        })
+                        .ok()
+                } else {
+                    None
+                }
+            })
+            .for_each(|(fd, path)| {
+                open_files.insert((pid, fd), path);
+            });
+    };
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
     env_logger::init();
@@ -103,6 +144,8 @@ async fn main() -> Result<(), anyhow::Error> {
 
     let mut rl = rustyline::DefaultEditor::new()?;
     let writer = rl.create_external_printer()?;
+
+    collect_already_open(pid, currently_open.clone())?;
 
     begin_tracking_events(rx, writer, all_events.clone(), currently_open.clone());
 
