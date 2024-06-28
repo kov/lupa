@@ -7,7 +7,7 @@ use std::{
 use anyhow::bail;
 use clap::Command;
 
-use crate::trace::Event;
+use crate::trace::{Event, EventDetail};
 
 pub type EventList = Arc<Mutex<Vec<Event>>>;
 pub type OpenFilesMap = Arc<Mutex<HashMap<(u64, i64), PathBuf>>>;
@@ -58,6 +58,10 @@ impl Shell {
                 Handler {
                     command: Command::new("ls").about("List currently open files"),
                     callback: Box::new(Self::print_currently_open),
+                },
+                Handler {
+                    command: Command::new("events").about("Show all events traced up to now"),
+                    callback: Box::new(Self::print_all_events),
                 },
                 Handler {
                     command: Command::new("help").about("Print help for available commands"),
@@ -126,6 +130,28 @@ impl Shell {
         println!("PID\tFD\t\tPath");
         for ((pid, fd), path) in self.open_files.lock().unwrap().iter() {
             println!("{}\t{}\t\t{}", pid, fd, path.to_string_lossy());
+        }
+
+        Ok(())
+    }
+
+    fn print_all_events(&mut self) -> Result<(), anyhow::Error> {
+        for event in self.all_events.lock().unwrap().iter() {
+            match &event.detail {
+                EventDetail::FileOpen { fd, path } => println!(
+                    "[{}] Open fd {} from {}",
+                    event.pid,
+                    fd,
+                    path.to_string_lossy()
+                ),
+                EventDetail::FailedFileOpen { errno, path } => println!(
+                    "[{}] Error {} trying to open {}",
+                    event.pid,
+                    errno,
+                    path.to_string_lossy()
+                ),
+                EventDetail::FdClose { fd } => println!("[{}] Close fd {}", event.pid, fd),
+            }
         }
 
         Ok(())
