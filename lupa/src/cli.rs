@@ -6,6 +6,7 @@ use std::{
 
 use anyhow::bail;
 use clap::Command;
+use itertools::Itertools;
 
 use crate::trace::{Event, EventDetail};
 
@@ -128,7 +129,13 @@ impl Shell {
 
     fn print_currently_open(&mut self) -> Result<(), anyhow::Error> {
         println!("PID\tFD\t\tPath");
-        for ((pid, fd), path) in self.open_files.lock().unwrap().iter() {
+        for ((pid, fd), path) in self
+            .open_files
+            .lock()
+            .unwrap()
+            .iter()
+            .sorted_by(|a, b| std::cmp::Ord::cmp(a.0, b.0))
+        {
             println!("{}\t{}\t\t{}", pid, fd, path.to_string_lossy());
         }
 
